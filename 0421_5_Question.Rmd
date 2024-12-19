@@ -1,0 +1,879 @@
+---
+title: '0421_Questions'
+author: "Samxie"
+date: "2024-04-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+require(foreign)
+library(haven)
+library(lubridate)
+library(proxy)
+library(stringr)
+```
+
+```{r}
+Reg_Vec <- read_dta("Reg_Vec.dta")
+```
+
+## Q1
+
+- 1）看看两种方法测度的结果，做个简单的相关性分析（相关系数及其显著性），说明二者是显著正相关的，并且相关性还不小（eg. 0.6）。2）从算法原理上可以说明doc比stm更能够揭示语义上的相似性
+
+- 检查相关性
+
+```{r}
+STM_posneg_eu <-read_dta("STM_posneg_eu.dta")
+STM_posneg_cos <-read_dta("STM_posneg_cos.dta")
+```
+
+```{r}
+# doc2Vec
+cov_matrix_doc2vec <- Reg_Vec |>
+  mutate(
+    CSM_10 = CSM_Ag_10,
+    CSM_10_eu_200 = -CSM_Ag_10_eu_x,
+    CSM_lReviewExper = CSM_10*log(Reviewer_Exper + 1),
+    CSM_ReviewValence = CSM_10*Review_Valence
+  ) |>
+  dplyr::select(HotelID, ReviewID, CSM_10,CSM_10_eu_200,Reviewer_Exper,Review_Valence,CSM_lReviewExper,CSM_ReviewValence) |>
+  na.omit()
+
+
+# STM-cosim
+cov_matrix_cosim <- STM_posneg_cos |>
+  mutate(
+    CSM_10_cos = CSM_10,
+    CSM_10_im_pos_cos = CSM_10_im_pos,
+    CSM_10_im_neg_cos = CSM_10_im_neg,
+    CSM_lReviewExper_cos = CSM_10_cos*log(Reviewer_Exper + 1),
+    CSM_ReviewValence_cos = CSM_10_cos*Review_Valence,
+    CSM_lReviewExper_pos_cos = CSM_10_im_pos_cos*log(Reviewer_Exper + 1),
+    CSM_ReviewValence_pos_cos = CSM_10_im_pos_cos*Review_Valence,
+    CSM_lReviewExper_neg_cos = CSM_10_im_neg_cos*log(Reviewer_Exper + 1),
+    CSM_ReviewValence_neg_cos = CSM_10_im_neg_cos*Review_Valence
+  ) |>
+  dplyr::select(HotelID, ReviewID, CSM_10_cos,CSM_10_im_pos_cos,CSM_10_im_neg_cos,Reviewer_Exper,Review_Valence,CSM_lReviewExper_cos,CSM_ReviewValence_cos,CSM_lReviewExper_pos_cos,CSM_ReviewValence_pos_cos,CSM_lReviewExper_neg_cos,CSM_ReviewValence_neg_cos) |>
+  na.omit()
+
+# STM-eu
+cov_matrix_eu <- STM_posneg_eu |>
+  mutate(
+    CSM_10_eu = CSM_10,
+    CSM_10_im_pos_eu = CSM_10_im_pos,
+    CSM_10_im_neg_eu = CSM_10_im_neg,
+    CSM_lReviewExper_eu = CSM_10_eu*log(Reviewer_Exper + 1),
+    CSM_ReviewValence_eu = CSM_10_eu*Review_Valence,
+    CSM_lReviewExper_pos_eu = CSM_10_im_pos_eu*log(Reviewer_Exper + 1),
+    CSM_ReviewValence_pos_eu = CSM_10_im_pos_eu*Review_Valence,
+    CSM_lReviewExper_neg_eu = CSM_10_im_neg_eu*log(Reviewer_Exper + 1),
+    CSM_ReviewValence_neg_eu = CSM_10_im_neg_eu*Review_Valence
+  ) |>
+  dplyr::select(HotelID, ReviewID, CSM_10_eu,CSM_10_im_pos_eu,CSM_10_im_neg_eu,Reviewer_Exper,Review_Valence,CSM_lReviewExper_eu,CSM_ReviewValence_eu,CSM_lReviewExper_pos_eu,CSM_ReviewValence_pos_eu,CSM_lReviewExper_neg_eu,CSM_ReviewValence_neg_eu) |>
+  na.omit()
+```
+
+```{r}
+cov_all <- inner_join(cov_matrix_cosim, cov_matrix_eu) |>
+  inner_join(cov_matrix_doc2vec)
+
+selected_columns_all <- cov_all[, c("CSM_10","CSM_10_eu_200","CSM_10_cos","CSM_10_eu","CSM_10_im_pos_cos","CSM_10_im_neg_cos","CSM_10_im_pos_eu","CSM_10_im_neg_eu","CSM_lReviewExper","CSM_ReviewValence","CSM_lReviewExper_cos","CSM_ReviewValence_cos","CSM_lReviewExper_eu","CSM_ReviewValence_eu","CSM_lReviewExper_pos_cos","CSM_ReviewValence_pos_cos","CSM_lReviewExper_neg_cos","CSM_ReviewValence_neg_cos","CSM_lReviewExper_pos_eu","CSM_ReviewValence_pos_eu","CSM_lReviewExper_neg_eu","CSM_ReviewValence_neg_eu")]
+correlation_matrix_all <- cor(selected_columns_all)
+correlation_matrix_all[upper.tri(correlation_matrix_all)] <- NA
+print(correlation_matrix_all)
+write.csv(correlation_matrix_all, "correlation_matrix_all.csv", row.names = T)
+```
+
+```{r}
+cov_all <- inner_join(cov_matrix_cosim, cov_matrix_eu) |>
+  inner_join(cov_matrix_doc2vec)
+
+selected_columns_all2 <- cov_all[, c("CSM_10","CSM_10_cos","CSM_10_eu","CSM_10_im_pos_cos","CSM_10_im_neg_cos","CSM_10_im_pos_eu","CSM_10_im_neg_eu")]
+correlation_matrix_all2 <- cor(selected_columns_all2)
+correlation_matrix_all2[upper.tri(correlation_matrix_all2)] <- NA
+print(correlation_matrix_all2)
+write.csv(correlation_matrix_all2, "correlation_matrix_CSMonly.csv", row.names = T)
+```
+
+- 可以发现，doc2vec与cos的CSM相关性约为0.6，与eu约为0.3
+
+### 补充探究：ChatGPT
+
+```{r}
+set.seed(202404)
+random_rows <- sample(nrow(vec_STM), 2000, replace = FALSE)
+vec_STM_GPT <- vec_STM[random_rows, ] |>
+  mutate(
+    CalID = rep(1:1000, each = 2),.after = HotelID
+  ) |>
+  group_by(CalID) |>
+  arrange(HotelID, ReviewID) |>
+  mutate(
+    CSM_stm = c(NA, sapply(2:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-1]]))
+    }))
+  ) |>
+  ungroup() |>
+  dplyr::select(CalID, HotelID, ReviewID, ReviewText, CSM_stm) |>
+  group_by(CalID) |>
+  arrange(HotelID, ReviewID) |>
+  fill(CSM_stm, .direction = "up") |>
+  ungroup()
+```
+
+```{r}
+load("vector_cal.RData")
+```
+
+```{r}
+calculate_cosine_similarity <- function(vec1, vec2) {
+  dot_product <- sum(vec1 * vec2)
+  norm_vec1 <- sqrt(sum(vec1^2))
+  norm_vec2 <- sqrt(sum(vec2^2))
+  cosine_similarity <- dot_product / (norm_vec1 * norm_vec2)
+  return(cosine_similarity)
+}
+```
+
+```{r}
+vector_cal <- vector_cal |>
+  dplyr::select(ReviewID, vec_value)
+vec_STM_GPT <- left_join(vec_STM_GPT, vector_cal) |>
+  group_by(CalID) |>
+  arrange(HotelID, ReviewID) |>
+  mutate(
+    CSM_doc2vec = c(NA, sapply(2:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-1]]))
+    }))
+  ) |>
+  ungroup() |>
+  dplyr::select(CalID, HotelID, ReviewID, ReviewText, CSM_stm, CSM_doc2vec) |>
+  group_by(CalID) |>
+  arrange(HotelID, ReviewID) |>
+  fill(CSM_doc2vec, .direction = "up") |>
+  ungroup() |>
+  dplyr::select(CalID, ReviewText, CSM_stm, CSM_doc2vec) 
+```
+
+```{r}
+vec_STM_GPT_spread <- vec_STM_GPT |>
+  group_by(CalID) |>
+  mutate( ReviewText2 = lead(ReviewText,1)) |>
+  drop_na(ReviewText2) |>
+  dplyr::select(CalID, ReviewText, ReviewText2, CSM_stm, CSM_doc2vec) 
+write_csv(vec_STM_GPT_spread, file = "GPT_Ask2.csv")
+```
+
+### Test
+
+```{r}
+GPT_Ask2 <- read_csv("GPT_Ask2.csv") |>
+  dplyr::select(CalID, CSM_doc2vec, CSM_stm, GPT_Score) 
+
+
+print("/")
+cor(GPT_Ask2$CSM_doc2vec, GPT_Ask2$CSM_stm)
+summary(GPT_Ask2$GPT_Score)
+sd(GPT_Ask2$GPT_Score)
+print("/")
+cor(GPT_Ask2$CSM_doc2vec, GPT_Ask2$GPT_Score)
+summary(GPT_Ask2$CSM_doc2vec)
+sd(GPT_Ask2$CSM_doc2vec)
+print("/")
+cor(GPT_Ask2$CSM_stm, GPT_Ask2$GPT_Score)
+summary(GPT_Ask2$CSM_stm)
+sd(GPT_Ask2$CSM_stm)
+```
+
+```{r}
+require(foreign)
+write.dta(GPT_Ask2, "GPT_Ask2.dta")
+```
+
+```{r}
+GPT_Ask2_temp <- read_csv("GPT_Ask2.csv") |>
+  dplyr::select(CalID, CSM_doc2vec, CSM_stm, GPT_Score)
+
+summary(GPT_Ask2$CSM_doc2vec)
+sd(GPT_Ask2$CSM_doc2vec)
+
+summary(GPT_Ask2$CSM_stm)
+sd(GPT_Ask2$CSM_stm)
+```
+
+## Q2 - 优先级靠后
+
+- 用同样的参数训练一个酒店描述的 doc2vec model，然后计算描述-评论相似性就可以了，可以：1）去掉原来的csm，看这个变量的效应；2）在原来的模型的基础上，加上这个变量看看其效应
+
+## Q3
+
+- 把csm和时间或者年份交互一下，看看随着年份的变化趋势即可。年份或者时间可以是连续变量，也可以是年份dummy。
+
+- 换成review order来做
+
+- 文献是用review order做了一个交互来识别temporal effects。当review order越高的时候，dissimilarity的负影响越弱。只是这篇文献里本身就是和previous的所有文献进行比较的，所以这个review order还需要斟酌一下。
+原则上每条意见都需要有实质性的回应，最好能做分析。例如，这里可以加一个分析，说明结果不显著，然后解释一下原因即可
+
+```{r}
+load("RData/review_data.RData") 
+
+review_Date <- hotel_user1 |>
+  dplyr::select(HotelID, ReviewID, RatingDate) |>
+  mutate(
+    HotelID = as_factor(HotelID),
+    RatingDate = as_date(RatingDate),
+    Year = as.integer(year(RatingDate))
+  ) |>
+  group_by(HotelID) |>
+  mutate(Order = row_number()) |>
+  ungroup() |>
+  dplyr::select(ReviewID, Year, Order)
+
+write.dta(review_Date, "Stata/Response_3/review_Date.dta")
+rm(review_Date)
+review_Date <-read_dta("Stata/Response_3/review_Date.dta")
+```
+
+```{r}
+Reg_Year_V200 <- inner_join(Reg_Vec, review_Date, by = c("ReviewID")) |>
+  mutate(
+    CSM_10 = CSM_Ag_10,
+    Year_int = as.integer(Year),
+    CSM_Year = CSM_10*Year_int,
+    Year_fct = as_factor(Year),
+    Year_2001 = ifelse(Year==2001, 1, 0),
+    Year_2002 = ifelse(Year==2002, 1, 0),
+    Year_2003 = ifelse(Year==2003, 1, 0),
+    Year_2004 = ifelse(Year==2004, 1, 0),
+    Year_2005 = ifelse(Year==2005, 1, 0),
+    Year_2006 = ifelse(Year==2006, 1, 0),
+    Year_2007 = ifelse(Year==2007, 1, 0),
+    Year_2008 = ifelse(Year==2008, 1, 0),
+    Year_2009 = ifelse(Year==2009, 1, 0),
+    Year_2010 = ifelse(Year==2010, 1, 0),
+    Year_2011 = ifelse(Year==2011, 1, 0),
+    Year_2012 = ifelse(Year==2012, 1, 0),
+    Year_2013 = ifelse(Year==2013, 1, 0),
+    Year_2014 = ifelse(Year==2014, 1, 0),
+    Year_2015 = ifelse(Year==2015, 1, 0),
+    Year_2016 = ifelse(Year==2016, 1, 0),
+    Year_2017 = ifelse(Year==2017, 1, 0),
+    CSM_2001  = CSM_10*Year_2001,
+    CSM_2002  = CSM_10*Year_2002,
+    CSM_2003  = CSM_10*Year_2003,
+    CSM_2004  = CSM_10*Year_2004,
+    CSM_2005  = CSM_10*Year_2005,
+    CSM_2006  = CSM_10*Year_2006,
+    CSM_2007  = CSM_10*Year_2007,
+    CSM_2008  = CSM_10*Year_2008,
+    CSM_2009  = CSM_10*Year_2009,
+    CSM_2010  = CSM_10*Year_2010,
+    CSM_2011  = CSM_10*Year_2011,
+    CSM_2012  = CSM_10*Year_2012,
+    CSM_2013  = CSM_10*Year_2013,
+    CSM_2014  = CSM_10*Year_2014,
+    CSM_2015  = CSM_10*Year_2015,
+    CSM_2016  = CSM_10*Year_2016,
+    CSM_2017  = CSM_10*Year_2017
+    ) |>
+  mutate(
+    Year_fct = as_factor(Year),
+    HotelID = as.factor(HotelID)
+  ) |>
+  dplyr::select(Num_Helpful, Order, Year, Year_int, Year_fct, HotelID,
+                CSM_10, CSM_Year, matches("^Year_20\\d{1,3}$"),
+                LSM_10, matches("^CSM_20\\d{1,3}$"), WC, Readability, Review_Valence, Elapsed_Day, No_Disclosure, Female, Mid_Age, Old_Age, Reviewer_Exper, Cities_Visited, matches("^V\\d{1,3}$"))
+```
+
+```{r}
+str(Reg_Year_V200)
+```
+
+```{r}
+write.dta(Reg_Year_V200, "Reg_Order_V200.dta")
+```
+
+```{r}
+Reg_Vec <- read_dta("Reg_Order_V200.dta")
+```
+
+```{r}
+Reg_Vec_combine <-  Reg_Vec |>
+  filter(Year_int<2017) |>
+  mutate(
+    CSM_less_2005 = ifelse(Year_int<=2005, CSM_10,0)
+  )
+```
+
+```{r}
+Reg_Vec |>
+  group_by(Year_int) |>
+  summarise(num=n())
+```
+
+```{r}
+Reg_Vec_orderrank <-  Reg_Vec |>
+  group_by(HotelID) |>
+  mutate(
+    num = n(),
+    Order_rank = Order/num
+  ) |>
+  ungroup()
+```
+
+```{r}
+write.dta(Reg_Vec_combine, "Reg_less2005group.dta")
+```
+
+```{r}
+write.dta(Reg_Vec_orderrank, "Reg_Vec_orderrank.dta")
+```
+
+
+- 使用stata进行三类回归
+
+**算year_month，order**
+- order quantile 归一化
+
+## Q4
+
+- I'm also a bit puzzled about operationalizing CSM in this analysis by aggregating the review texts to the hotel-month level and representing each aggregated text as a vector. Why is this superior to treating each review separately and using the average pairwise similarity calculations, similar to the rest of the paper?
+
+- （1）上集群算，最大的一个月份29000次，hotel-month panel中是5.7万obs, 所以计算量足以大是3万*6万=18亿次 cosim。这么算了，show efforts。（2）准备revenue的数据，能与review匹配上的。徐钊、亚楠都有这个data。佳雯先解决data的问题，注意样本的对应关系，然后xie shen计算一下
+
+- **0504补充：只使用data_tax_trip_month已匹配好的表**
+
+
+```{r}
+data_tax_trip_month <- read_csv("Q4_5/data_tax_trip_month.csv")
+# tp_data_plus <- read_csv("Q4_5//tp_data_plus.csv")
+allmatched <- read_csv("Q4_5/allmatched.csv")
+# tax2011_2016 <- read_csv("Q4_5/tax2011_2016.csv")
+# tax2017_202106 <- read_csv("Q4_5/tax2017_202106.csv")
+```
+
+### Q4-1 两两配对
+
+**准备计算CSM的vector文件**
+
+```{r}
+load(file = 'RData/20221012Vector.RData')
+load(file = 'RData/vector_cal.RData')
+load(file = 'RData/review_data.RData')
+```
+
+```{r}
+review_vector <- review_vector |>
+  dplyr::select(HotelID, ReviewID, matches("^V\\d{1,3}$"))
+review_vec <- left_join(vector_cal, review_vector) |>
+  dplyr::select(-RatingDate)
+
+Reg_Vec_Revenue <- left_join(hotel_user1,review_vec) |>
+  mutate(
+    year = year(RatingDate),
+    month = month(RatingDate)
+  ) |>
+  dplyr::select(HotelID, ReviewID, RatingDate, year, month, ReviewText, AvgRatingStarsThisUser, vec_value, matches("^V\\d{1,3}$"))
+
+# 连接成整合大表
+tax_trip_month <- data_tax_trip_month |>
+  mutate(
+    HotelID_test = HotelID
+  )
+
+Zip <- allmatched |>
+  mutate(HotelID_test2 = HotelID) |>
+  dplyr::select(HotelID, Zip, HotelID_test2)
+
+Revenue_all <- left_join(
+  Reg_Vec_Revenue, tax_trip_month, by = c("HotelID","year","month")
+                         ) |>
+  filter(HotelID == HotelID_test) |>
+  mutate(
+    room_receipts = Total.Room.Receipts,
+    rooms = `Number of Rooms`
+  ) |>
+  dplyr::select(HotelID, ReviewID, RatingDate, year, month, ReviewText, AvgRatingStarsThisUser, vec_value, Total.Room.Receipts, rooms, room_receipts,RevPAR,  matches("^V\\d{1,3}$")) %>%
+  left_join(., Zip, by=c("HotelID")) |>
+  filter(HotelID==HotelID_test2) |>
+  dplyr::select(HotelID, ReviewID, Zip, year, month, AvgRatingStarsThisUser, rooms, room_receipts, vec_value, RevPAR, matches("^V\\d{1,3}$"))
+```
+
+
+**HotelID-month level数据**
+```{r}
+# 使用基本函数获取该月的天数
+dates_sequence <- seq(as.Date("2001-01-01"), as.Date("2017-12-31"), by = "day") |>
+  as.tibble() |>
+  mutate(
+    year = year(value),
+    month = month(value)
+  ) |>
+  group_by(year,month) |>
+  summarise(days = n()) |>
+  ungroup()
+
+Revenue_month <- Revenue_all |>
+  dplyr::select(HotelID, ReviewID, Zip, year, month, RevPAR, AvgRatingStarsThisUser, rooms, room_receipts) %>%
+  left_join(., dates_sequence) |>
+  group_by(HotelID,year,month) |>
+  mutate(
+    avg_rating_month = mean(AvgRatingStarsThisUser, na.rm = T),
+    RevPAR = RevPAR,
+    volumn_month = n()
+  ) |>
+  ungroup() |>
+  group_by(Zip) |>
+  mutate(
+    hotel_num = n()
+  ) |>
+  ungroup() |>
+  group_by(Zip,year,month) |>
+  mutate(
+    Avg_All_RevPAR = mean(RevPAR, na.rm = T),.after = RevPAR
+  ) |>
+  ungroup() |>
+  mutate(
+    Avg_Com_RevPAR = (Avg_All_RevPAR*hotel_num-RevPAR)/(hotel_num-1),.after = Avg_All_RevPAR
+  ) 
+
+Revenue_month_acc <- Revenue_month |>
+  group_by(HotelID, year, month) |>
+  arrange(year, month, ReviewID) |>
+  summarise(volumn_month = n()) |>
+  ungroup() |>
+  group_by(HotelID) |>
+  arrange(year, month) |>
+  mutate(volumn_acc = cumsum(volumn_month))
+
+Revenue_month_accrating <- Revenue_month |>
+  group_by(HotelID) |>
+  mutate(
+    Avg_Rating = cummean(AvgRatingStarsThisUser)
+  ) |>
+  group_by(HotelID, year, month) |>
+  mutate(
+    row_num = row_number(),
+    num = n()
+  ) |>
+  filter(num==row_num) |>
+  ungroup() |>
+  dplyr::select(HotelID, year, month, Avg_Rating)
+
+# 为了求累计标准差，专门定义一个acc_sd函数
+acc_sd <- function(df) {
+  x <- vector("double", 0)
+  acc_sd <- vector("double", 0)
+  for (i in seq_along(df)) {
+    x <- c(x, df[[i]])
+    acc_sd <- c(acc_sd, sd(x))
+  }
+  acc_sd[1] = 0
+  acc_sd
+}
+
+Revenue_month_sdacc <- Revenue_month |>
+  group_by(HotelID) |>
+  arrange(year, month, ReviewID) |>
+  mutate(acc_Std_Rating = acc_sd(AvgRatingStarsThisUser)) |>
+  # 在HotelID，year，month层次求解平均值
+  ungroup() |>
+  group_by(HotelID,year,month) |>
+  summarise(
+            Rating_SD = acc_Std_Rating[length(acc_Std_Rating)]
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, year, month, Rating_SD) |>
+  arrange(HotelID, year, month) 
+
+Revenue <- left_join(Revenue_month, Revenue_month_acc) %>%
+  left_join(., Revenue_month_sdacc)  %>%
+  left_join(., Revenue_month_accrating)
+
+```
+
+```{r}
+save(Revenue,file="Revenue_Q4n5.RData")
+```
+
+
+**计算CSM**
+
+```{r}
+calculate_cosine_similarity <- function(vec1, vec2) {
+  vec1 <- unlist(vec1,recursive = FALSE)
+  vec2 <- unlist(vec2,recursive = FALSE)
+  dot_product <- sum(vec1 * vec2)
+  norm_vec1 <- sqrt(sum(vec1^2))
+  norm_vec2 <- sqrt(sum(vec2^2))
+  cosine_similarity <- dot_product / (norm_vec1 * norm_vec2)
+  return(cosine_similarity)
+}
+
+calculate_monthly_csm_avg <- function(month1_vectors, month2_vectors) {
+  month_csm_avg <- numeric(length(unlist(month2_vectors, recursive = F)))
+  for (i in seq_along(unlist(month2_vectors, recursive = F))) {
+    csm_sum <- 0
+    for (j in seq_along(unlist(month1_vectors, recursive = F))) {
+      csm_sum <- csm_sum + calculate_cosine_similarity(
+        unlist(month1_vectors, recursive = F)[[j]],
+        unlist(month2_vectors, recursive = F)[[i]]
+        )
+    }
+    month_csm_avg[i] <- csm_sum / length(unlist(month1_vectors, recursive = F))
+  }
+  return(mean(month_csm_avg))
+}
+```
+
+```{r}
+Revenue_csm <- Revenue_all |>
+  dplyr::select(HotelID, ReviewID, year, month, vec_value) |>
+  arrange(HotelID, year, month, ReviewID) 
+
+Revenue_csm_month<- Revenue_csm  |>
+  group_by(HotelID, year, month) |>
+  summarize(
+    calcount = n(),
+    vec_value_month = list(vec_value)
+    ) |>
+  ungroup()
+```
+
+```{r}
+Revenue_csm_month2 <- Revenue_csm_month |>
+  group_by(HotelID) |>
+  filter(n()>1) |>
+  arrange(HotelID, year, month) |>
+  mutate(
+    vec_value_month_lag = lag(vec_value_month)
+    ) |>
+  mutate(
+    CSM_month = c(NA, sapply(2:n(), function(i) {
+      calculate_monthly_csm_avg(vec_value_month[i-1], vec_value_month[i])
+    }))
+  ) 
+# Revenue_csm_temp2$vec_value_month[2]
+# Revenue_csm_temp2$vec_value_month_lag[2]
+```
+
+
+**连接表**
+```{r}
+save(Revenue_csm_month2,file="Revenue_Q4n5_csm.RData")
+```
+
+```{r}
+Revenue_join <- Revenue |>
+  group_by(HotelID, year, month) |>
+  mutate(
+    Avg_Month_Rating = avg_rating_month,
+    Avg_Rating = Avg_Rating,
+    RevPAR = RevPAR,
+    Avg_Com_RevPAR  =Avg_Com_RevPAR,
+    Volumn = volumn_acc,
+    Rating_SD = Rating_SD
+  ) |>
+  slice(1) |>
+  ungroup()
+
+Revenue_Reg <- left_join(Revenue_csm_month2, Revenue_join) |>
+  dplyr::select(HotelID, year, month, CSM_month, Avg_Month_Rating, Avg_Rating, RevPAR,  Avg_Com_RevPAR, Volumn, Rating_SD) |>
+  ungroup() |>
+  mutate(
+    Year_Month = paste(year, month, sep = "-"),
+    Year_Month = as.integer(as_factor(Year_Month)),
+    HotelID = as_factor(HotelID)
+  )
+```
+
+
+```{r}
+print("CSM_month")
+summary(Revenue_Reg$CSM_month)
+sd(na.omit(Revenue_Reg$CSM_month))
+summary(data_tax_trip_month$mon_sim1)
+sd(na.omit(data_tax_trip_month$mon_sim1))
+print("RevPAR")
+summary(Revenue_Reg$RevPAR)
+sd(na.omit(Revenue_Reg$RevPAR))
+summary(data_tax_trip_month$RevPAR)
+sd(na.omit(data_tax_trip_month$RevPAR))
+print("Avg_Month_Rating")
+summary(Revenue_Reg$Avg_Month_Rating)
+sd(na.omit(Revenue_Reg$Avg_Month_Rating))
+summary(data_tax_trip_month$avg_rating_month)
+sd(na.omit(data_tax_trip_month$avg_rating_month))
+print("Avg_Rating")
+summary(Revenue_Reg$Avg_Rating)
+sd(na.omit(Revenue_Reg$Avg_Rating))
+summary(data_tax_trip_month$avg_rating_acc)
+sd(na.omit(data_tax_trip_month$avg_rating_acc))
+print("Avg_Com_RevPAR")
+summary(Revenue_Reg$Avg_Com_RevPAR)
+sd(na.omit(Revenue_Reg$Avg_Com_RevPAR))
+print("Volumn")
+summary(Revenue_Reg$Volumn)
+sd(na.omit(Revenue_Reg$Volumn))
+summary(data_tax_trip_month$vol_acc)
+sd(na.omit(data_tax_trip_month$vol_acc))
+print("Rating_SD")
+summary(Revenue_Reg$Rating_SD)
+sd(na.omit(Revenue_Reg$Rating_SD))
+```
+
+```{r}
+# load("Revenue_Reg.RData")
+save(Revenue_Reg,file="Revenue_Reg.RData")
+```
+
+```{r}
+month_sim <- data_tax_trip_month |>
+  dplyr::select(HotelID, year, month, mon_sim1) |>
+  mutate(
+    HotelID = as_factor(HotelID)
+  )
+Revenue_Reg <- left_join(Revenue_Reg, month_sim) 
+```
+
+```{r}
+write.dta(Revenue_Reg, "Revenue_Reg.dta")
+```
+
+```{r}
+Revenue_Reg |>
+  ungroup() |>
+  ggplot(aes(y=log(RevPAR))) +
+  geom_boxplot() +
+  coord_flip()
+```
+
+### Q4-2 直接使用月度向量doc2vec
+
+```{r}
+load(file = 'review_data.RData')
+```
+
+```{r}
+acc_sd <- function(df) {
+  x <- vector("double", 0)
+  acc_sd <- vector("double", 0)
+  for (i in seq_along(df)) {
+    x <- c(x, df[[i]])
+    acc_sd <- c(acc_sd, sd(x))
+  }
+  acc_sd[1] = 0
+  acc_sd
+}
+Hotel_rating <- hotel_user1 |>
+  mutate(
+    year = year(RatingDate),
+    month = month(RatingDate)
+  ) |>
+  dplyr::select(HotelID, ReviewID, RatingDate, year, month, AvgRatingStarsThisUser) |>
+  group_by(HotelID) |>
+  arrange(year, month, ReviewID) |>
+  mutate(acc_Std_Rating = acc_sd(AvgRatingStarsThisUser)) |>
+  # 在HotelID，year，month层次求解平均值
+  ungroup() |>
+  group_by(HotelID,year,month) |>
+  summarise(
+            rating_sd = acc_Std_Rating[length(acc_Std_Rating)]
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, year, month, rating_sd) |>
+  arrange(HotelID, year, month) 
+```
+
+```{r}
+mon_sim <- data_tax_trip_month |>
+  dplyr::select(HotelID,year,month,RevPAR,mon_sim1,avg_rating_month,avg_rating_acc)
+Zip <- allmatched |>
+  dplyr::select(HotelID,Zip) |>
+  group_by(HotelID) |>
+  slice(1)
+
+Mon_Sim_Reg <- left_join(mon_sim, Zip, by=c("HotelID")) |>
+  group_by(Zip) |>
+  mutate(
+    hotel_num = n()
+  ) |>
+  ungroup() |>
+  group_by(Zip,year,month) |>
+  mutate(
+    avg_RevPAR = mean(RevPAR, na.rm = T),.after = RevPAR
+  ) |>
+  ungroup() |>
+  mutate(
+    avg_com_RevPAR = (avg_RevPAR*hotel_num-RevPAR)/(hotel_num-1),.after = avg_RevPAR
+  ) 
+
+volumn_acc <- hotel_user1 |>
+  mutate(
+    year = year(RatingDate),
+    month = month(RatingDate)
+  ) |>
+  group_by(HotelID, year, month) |>
+  arrange(year, month, ReviewID) |>
+  summarise(volumn_month = n()) |>
+  ungroup() |>
+  group_by(HotelID) |>
+  arrange(year, month) |>
+  mutate(
+    vol_acc = cumsum(volumn_month),
+    lag_acc_volumn = lag(vol_acc)
+    ) |>
+  ungroup() 
+
+rating_acc <- hotel_user1 |>
+  mutate(
+    year = year(RatingDate),
+    month = month(RatingDate)
+  ) |>
+  group_by(HotelID) |>
+  arrange(year, month, ReviewID) |>
+  mutate(
+    avg_rating_acc = cummean(AvgRatingStarsThisUser)
+  ) |>
+  group_by(HotelID,year,month) |>
+  slice_tail(n=1) |>
+  ungroup() |>
+  dplyr::select(HotelID, year, month, AvgRatingStarsThisUser, avg_rating_acc) |>
+  arrange(HotelID, year, month)
+
+Sim_Reg <- left_join(Mon_Sim_Reg, Hotel_rating) %>%
+  left_join(.,rating_acc) %>%
+  left_join(.,volumn_acc ) |>
+  group_by(HotelID) |>
+  arrange(year,month) |>
+  mutate(
+    lag_RevPAR = lag(RevPAR),
+    lag_avg_rating_acc = lag(avg_rating_acc),
+    lag_avg_rating_mon = lag(avg_rating_month),
+    lag_rating_sd = lag(rating_sd)
+  ) |>
+  ungroup() |>
+  group_by(Zip) |>
+  arrange(year,month) |>
+  mutate(
+    lag_avg_com_RevPAR = lag(avg_com_RevPAR)
+  ) |>
+  ungroup()
+```
+
+**稳健性-字符数-单词数**
+
+```{r}
+# **稳健性-字符数**
+Hotel_character <- hotel_user1 |>
+  mutate(
+    year = year(RatingDate),
+    month = month(RatingDate),
+    characters = nchar(str_extract_all(ReviewText, "\\b[a-zA-Z]+\\b"))
+  ) |>
+  dplyr::select(HotelID, ReviewID, RatingDate, year, month, characters) |>
+  group_by(HotelID,year,month) |>
+  summarise(
+    characters_month = sum(characters)
+  ) |>
+  ungroup() |>
+  group_by(HotelID) |>
+  arrange(year,month) |>
+  mutate(
+    characters_acc = cumsum(characters_month)
+  ) |>
+  ungroup() |>
+  group_by(HotelID) |>
+  arrange(year,month) |>
+  mutate(
+    lag_character = lag(characters_acc)
+  ) |>
+  ungroup() |>
+  arrange(HotelID,year,month) 
+```
+
+```{r}
+# 单词数
+Hotel_words <- hotel_user1 |>
+  mutate(
+    year = year(RatingDate),
+    month = month(RatingDate),
+  ) |>
+  group_by(HotelID, year, month) |>
+  summarise(
+    combined_text = paste(ReviewText, collapse = " "),
+    words = length(unique(tolower(unlist(str_extract_all(combined_text, "\\b[a-zA-Z]+\\b")))))
+  ) |>
+  ungroup() |>
+  group_by(HotelID) |>
+  arrange(year,month) |>
+  mutate(
+    words_acc = cumsum(words)
+  ) |>
+  ungroup() |>
+  group_by(HotelID) |>
+  arrange(year,month) |>
+  mutate(
+    lag_words = lag(words_acc)
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID,year,month,words,words_acc,lag_words) |>
+  arrange(HotelID,year,month)
+```
+
+```{r}
+Sim_Reg_all <- left_join(Sim_Reg, Hotel_words) %>%
+  left_join(.,Hotel_character) |>
+  ungroup() |>
+  mutate(
+    year_month = paste(year, month, sep = "-"),
+    year_month = as.integer(as_factor(year_month)),
+    HotelID = as_factor(HotelID)
+    ) |>
+  group_by(HotelID) |>
+  mutate(
+    Volumn_Group = case_when(
+      lag_acc_volumn < quantile(lag_acc_volumn, 0.25, na.rm = T) ~ 0,
+      lag_acc_volumn > quantile(lag_acc_volumn, 0.75, na.rm = T) ~ 2,
+      TRUE ~ 1
+    ),
+    Volumn_Group = as_factor(Volumn_Group)
+  ) |>
+  ungroup()
+```
+
+```{r}
+write_dta(Sim_Reg_all, "Sim_Reg_all.dta")
+```
+
+**检验**
+
+```{r}
+Sim_Reg_all |>
+  #dplyr::select(HotelID, year, month, lag_acc_volumn, lag_character, lag_words) |>
+  arrange(HotelID, year, month) |>
+  filter(is.na(lag_acc_volumn))
+Sim_Reg_all |>
+  #dplyr::select(HotelID, year, month, lag_acc_volumn, lag_character, lag_words) |>
+  arrange(HotelID, year, month) |>
+  filter(is.na(lag_words))
+Sim_Reg_all |>
+  #dplyr::select(HotelID, year, month, lag_acc_volumn, lag_character, lag_words) |>
+  arrange(HotelID, year, month) |>
+  filter(is.na(lag_character))
+```
+
+
+## Q5
+
+- The additional analysis of economic value is intriguing. Given that both direct and interaction coefficients for CSM are negative, it would be helpful to examine more closely the marginal effect of CSM at different volume levels.
+
+- 尽可能先做一下边际分析-见对应的Stata文件
+
+

@@ -1,0 +1,1408 @@
+---
+title: "Response_3"
+author: "Samxie"
+date: "2024-03-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1 Data Importing
+
+```{r include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(stringr)
+library(cld2)
+library(quanteda)     # readability
+library(quanteda.textstats)
+library(quanteda.textplots)
+library(syuzhet)      # sentiment analysis
+library(text2vec)
+library('haven')
+```
+ 
+```{r}
+load(file='RData/review_data.RData')
+load(file='RData/user_detail.RData')
+```
+
+# 2 Variable Construction
+
+## 2.1 LSM
+
+```{r}
+review_LIWC <- read.csv(file='CSV/LIWC2015 Results (texas_review_text.csv).csv', fileEncoding='utf-8')
+```
+
+```{r}
+review <- hotel_user1 |>
+  dplyr::select(HotelID, RatingDate,ReviewID,ReviewText)
+
+colnames(review_LIWC)[1] <- "ReviewID"
+colnames(review_LIWC)[2] <- "ReviewText"
+review_LIWC <- review_LIWC[-1,] |>
+  mutate(ReviewID=as.integer(ReviewID))
+
+review_LIWC <- review |>
+  left_join(review_LIWC) |>
+  filter(WC!=0) |>
+  dplyr::select(HotelID, RatingDate, ReviewID, WC, ppron, ipron, article, conj, prep, auxverb, adverb, negate, quant)
+```
+这里会部分无法转码的评论，即带有连续的？的评论
+
+计算LSM： LSMpreps = 1 – [(│preps1 – preps2│)/(preps1 + preps2 + 0.0001)]
+In this formula, preps1 is the percentage of prepositions used by the first person, and preps2 is the percentage used by the second. In the denominator, 0.0001 is added to prevent empty sets. The nine category-level LSM scores were averaged to yield a composite LSM score bounded by 0 and 1; higher numbers represent greater stylistic similarity between two speakers.
+
+
+```{r}
+# 定义LSM函数
+LSM <- function(v1, v2) {
+  1 - abs(v1 - v2) / abs(v1 + v2 + 0.0001)
+}
+
+LSM_sum <- function(df, num, direction, wght){
+  df <- df %>%
+    mutate(
+      g_WC = 0,
+      g_ppron = 0,
+      g_ipron = 0,
+      g_article = 0,
+      g_conj = 0,
+      g_prep = 0,
+      g_auxverb = 0,
+      g_negate = 0,
+      g_adverb = 0,
+      g_quant = 0
+    ) %>%
+    arrange(RatingDate)
+  
+  n <- nrow(df)
+  for (i in 1:n){
+    if (direction == "before" && i - num >= 1) {
+      if(wght == T) {
+        weights <- 1 / (num:1)
+      } else {
+        weights <- rep(1/num, num)
+      }
+      df$g_ppron[i] <- sum(df$ppron[(i-num):(i-1)] * weights)
+      df$g_ipron[i] <- sum(df$ipron[(i-num):(i-1)] * weights)
+      df$g_article[i] <- sum(df$article[(i-num):(i-1)] * weights)
+      df$g_conj[i] <- sum(df$conj[(i-num):(i-1)] * weights)
+      df$g_prep[i] <- sum(df$prep[(i-num):(i-1)] * weights)
+      df$g_auxverb[i] <- sum(df$auxverb[(i-num):(i-1)] * weights)
+      df$g_negate[i] <- sum(df$negate[(i-num):(i-1)] * weights)
+      df$g_adverb[i] <- sum(df$adverb[(i-num):(i-1)] * weights)
+      df$g_quant[i] <- sum(df$quant[(i-num):(i-1)] * weights)
+    } else if (direction == "after" && i + num <= n) {
+      if(wght == T) {
+        weights <- 1 / (1:num)
+      } else {
+        weights <- rep(1/num, num)
+      }
+      df$g_ppron[i] <- sum(df$ppron[(i+1):(i+num)] * weights)
+      df$g_ipron[i] <- sum(df$ipron[(i+1):(i+num)] * weights)
+      df$g_article[i] <- sum(df$article[(i+1):(i+num)] * weights)
+      df$g_conj[i] <- sum(df$conj[(i+1):(i+num)] * weights)
+      df$g_prep[i] <- sum(df$prep[(i+1):(i+num)] * weights)
+      df$g_auxverb[i] <- sum(df$auxverb[(i+1):(i+num)] * weights)
+      df$g_negate[i] <- sum(df$negate[(i+1):(i+num)] * weights)
+      df$g_adverb[i] <- sum(df$adverb[(i+1):(i+num)] * weights)
+      df$g_quant[i] <- sum(df$quant[(i+1):(i+num)] * weights)
+    } else if (direction == "center" && i - num/2 >= 1 && i + num/2 <= n) {
+      if(wght == T) {
+        weights_before <- 1 / ((num/2):1)
+        weights_after <- 1 /(1:(num/2))
+      } else {
+        weights_before <- rep(1/num, num/2)
+        weights_after <- rep(1/num, num/2)
+      }
+      df$g_ppron[i] <- (sum(df$ppron[(i-num/2):(i-1)] * weights_before)+sum(df$ppron[(i+1):(i+num/2)] * weights_after))/2
+      df$g_ipron[i] <- (sum(df$ipron[(i-num/2):(i-1)] * weights_before)+sum(df$ipron[(i+1):(i+num/2)] * weights_after))/2
+      df$g_article[i] <- (sum(df$article[(i-num/2):(i-1)] * weights_before)+sum(df$article[(i+1):(i+num/2)] * weights_after))/2
+      df$g_conj[i] <- (sum(df$conj[(i-num/2):(i-1)] * weights_before)+sum(df$conj[(i+1):(i+num/2)] * weights_after))/2
+      df$g_prep[i] <- (sum(df$prep[(i-num/2):(i-1)] * weights_before)+sum(df$prep[(i+1):(i+num/2)] * weights_after))/2
+      df$g_auxverb[i] <- (sum(df$auxverb[(i-num/2):(i-1)] * weights_before)+sum(df$auxverb[(i+1):(i+num/2)] * weights_after))/2
+      df$g_negate[i] <- (sum(df$negate[(i-num/2):(i-1)] * weights_before)+sum(df$negate[(i+1):(i+num/2)] * weights_after))/2
+      df$g_adverb[i] <- (sum(df$adverb[(i-num/2):(i-1)] * weights_before)+sum(df$adverb[(i+1):(i+num/2)] * weights_after))/2
+      df$g_quant[i] <- (sum(df$quant[(i-num/2):(i-1)] * weights_before)+sum(df$quant[(i+1):(i+num/2)] * weights_after))/2
+    } else {
+      # If not enough data points to calculate mean, set to NA
+      df$g_ppron[i] <- NA
+      df$g_ipron[i] <- NA
+      df$g_article[i] <- NA
+      df$g_conj[i] <- NA
+      df$g_prep[i] <- NA
+      df$g_auxverb[i] <- NA
+      df$g_negate[i] <- NA
+      df$g_adverb[i] <- NA
+      df$g_quant[i] <- NA
+    }
+  }
+  df
+}
+```
+
+```{r include=FALSE}
+split_LIWC <- split(review_LIWC, review_LIWC$HotelID)
+str(split_LIWC)
+```
+
+**计算LSM**
+```{r}
+Sys.time()
+LIWC_results_10 <- lapply(split_LIWC, function(x) LSM_sum(x,10,'before',wght=F))
+LIWC_results_10_test <- lapply(split_LIWC, function(x) LSM_sum(x,10,'after',wght=F))
+LIWC_results_10_wght <- lapply(split_LIWC, function(x)LSM_sum(x,10,'before',wght=T))
+LIWC_results_10_wght_test <- lapply(split_LIWC, function(x)LSM_sum(x,10,'after',wght=T))
+
+LIWC_results_5_5 <- lapply(split_LIWC, function(x) LSM_sum(x,10,'center',wght=F))
+LIWC_results_5_5_wght <- lapply(split_LIWC, function(x) LSM_sum(x,10,'center',wght=T))
+
+LIWC_results_20 <- lapply(split_LIWC, function(x) LSM_sum(x,20,'before',wght=F))
+LIWC_results_20_test <- lapply(split_LIWC, function(x) LSM_sum(x,20,'after',wght=F))
+LIWC_results_20_wght <- lapply(split_LIWC, function(x) LSM_sum(x,20,'before',wght=T))
+LIWC_results_20_wght_test <- lapply(split_LIWC, function(x) LSM_sum(x,20,'after',wght=T))
+
+LIWC_results_10_10 <- lapply(split_LIWC, function(x)LSM_sum(x,20,'center',wght=F))
+LIWC_results_10_10_wght <- lapply(split_LIWC, function(x)LSM_sum(x,20,'center',wght=T))
+
+LIWC_results_20_20 <- lapply(split_LIWC, function(x)LSM_sum(x,40,'center',wght=F))
+LIWC_results_20_20_wght <- lapply(split_LIWC, function(x)LSM_sum(x,40,'center',wght=T))
+Sys.time()
+```
+
+```{r}
+Sys.time()
+LIWC_results_10 <- do.call("rbind", LIWC_results_10)
+LIWC_results_10_wght <- do.call("rbind", LIWC_results_10_wght)
+LIWC_results_10_test <- do.call("rbind", LIWC_results_10_test)
+LIWC_results_10_wght_test <- do.call("rbind", LIWC_results_10_wght_test)
+
+LIWC_results_5_5 <- do.call("rbind", LIWC_results_5_5)
+LIWC_results_5_5_wght <- do.call("rbind", LIWC_results_5_5_wght)
+
+LIWC_results_20 <- do.call("rbind", LIWC_results_20)
+LIWC_results_20_wght <- do.call("rbind", LIWC_results_20_wght)
+LIWC_results_20_test <- do.call("rbind", LIWC_results_20_test)
+LIWC_results_20_wght_test <- do.call("rbind", LIWC_results_20_wght_test)
+
+
+LIWC_results_10_10 <- do.call("rbind", LIWC_results_10_10)
+LIWC_results_10_10_wght <- do.call("rbind", LIWC_results_10_10_wght)
+LIWC_results_20_20 <- do.call("rbind", LIWC_results_20_20)
+LIWC_results_20_20_wght <- do.call("rbind", LIWC_results_20_20_wght)
+```
+
+```{r}
+# 10
+LIWC_results <- LIWC_results_10 |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_10 = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10)
+# 10_test
+LIWC_results <- left_join(LIWC_results,LIWC_results_10_test) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_10_test = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test)
+# 10_wght
+LIWC_results <- left_join(LIWC_results,LIWC_results_10_wght) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_10_wght = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght)
+# 10_wght_test
+LIWC_results <- left_join(LIWC_results,LIWC_results_10_wght_test) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_10_wght_test = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght, LSM_10_wght_test)
+# 5_5
+LIWC_results <- left_join(LIWC_results,LIWC_results_5_5) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_5_5 = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght, LSM_10_wght_test, LSM_5_5)
+# 5_5_wght
+LIWC_results <- left_join(LIWC_results,LIWC_results_5_5_wght) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_5_5_wght = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght, LSM_10_wght_test, LSM_5_5, LSM_5_5_wght)
+# 20
+LIWC_results <- left_join(LIWC_results,LIWC_results_20) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_20 = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght, LSM_10_wght_test, LSM_5_5, LSM_5_5_wght, LSM_20)
+# 20_test
+LIWC_results <- left_join(LIWC_results,LIWC_results_20_test) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_20_test = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght, LSM_10_wght_test, LSM_5_5, LSM_5_5_wght, LSM_20, LSM_20_test)
+# 20_wght
+LIWC_results <- left_join(LIWC_results,LIWC_results_20_wght) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_20_wght = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght, LSM_10_wght_test, LSM_5_5, LSM_5_5_wght, LSM_20, LSM_20_test, LSM_20_wght)
+# 20_wght_test
+LIWC_results <- left_join(LIWC_results,LIWC_results_20_wght_test) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_20_wght_test = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght, LSM_10_wght_test, LSM_5_5, LSM_5_5_wght, LSM_20, LSM_20_test, LSM_20_wght, LSM_20_wght_test)
+# 10_10
+LIWC_results <- left_join(LIWC_results,LIWC_results_10_10) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_10_10 = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght, LSM_10_wght_test, LSM_5_5, LSM_5_5_wght, LSM_20, LSM_20_test, LSM_20_wght, LSM_20_wght_test, LSM_10_10)
+# 10_10_wght
+LIWC_results <- left_join(LIWC_results,LIWC_results_10_10_wght) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_10_10_wght = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght, LSM_10_wght_test, LSM_5_5, LSM_5_5_wght, LSM_20, LSM_20_test, LSM_20_wght, LSM_20_wght_test, LSM_10_10, LSM_10_10_wght)
+# 20_20
+LIWC_results <- left_join(LIWC_results,LIWC_results_20_20) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_20_20 = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght, LSM_10_wght_test, LSM_5_5, LSM_5_5_wght, LSM_20, LSM_20_test, LSM_20_wght, LSM_20_wght_test, LSM_10_10, LSM_10_10_wght, LSM_20_20)
+# 20_20_wght
+LIWC_results <- left_join(LIWC_results,LIWC_results_20_20_wght) |>
+  group_by(HotelID) |>
+  mutate(
+    LSM_ppron = LSM(ppron, g_ppron),LSM_ipron = LSM(ipron, g_ipron),
+    LSM_article = LSM(article, g_article),LSM_conj = LSM(conj, g_conj),
+    LSM_prep = LSM(prep, g_prep),LSM_auxverb = LSM(auxverb, g_auxverb),
+    LSM_negate = LSM(negate, g_negate),LSM_adverb = LSM(adverb, g_adverb),
+    LSM_quant = LSM(quant, g_quant)
+  ) |>
+  mutate(
+    LSM_20_20_wght = (LSM_ppron + LSM_ipron + LSM_article + 
+              LSM_conj + LSM_prep + LSM_auxverb + 
+              LSM_negate + LSM_adverb + LSM_quant)/9
+  ) |>
+  ungroup() |>
+  dplyr::select(HotelID, ReviewID, WC, LSM_10, LSM_10_test, LSM_10_wght, LSM_10_wght_test, LSM_5_5, LSM_5_5_wght, LSM_20, LSM_20_test, LSM_20_wght, LSM_20_wght_test, LSM_10_10, LSM_10_10_wght, LSM_20_20, LSM_20_20_wght)
+Sys.time()
+```
+**验证LSM计算结果**
+```{r}
+summary(LIWC_results$LSM_10)
+sd(na.omit(LIWC_results$LSM_10))
+```
+
+```{r}
+review_LSM <- LIWC_results
+save(review_LSM, file = "RData/review_LSM.RData")
+# 将DataFrame导出为RData文件
+```
+
+## 2.2 CSM
+ 
+```{r}
+load(file = 'RData/20221012Vector.RData')
+```
+
+
+```{r}
+# 选择以V开头的列
+v_columns <- grep("^V", names(review_vector), value = TRUE)
+
+# 合并V开头的列为一个新列
+review_vector <- review_vector %>%
+  mutate(vec_value = do.call(paste, c(select(., v_columns), sep = " ")))
+```
+
+```{r}
+vector_cal <- review_vector |>
+  dplyr::select(HotelID, RatingDate, ReviewID, vec_value) |>
+  mutate(
+    vec_value = gsub("[][]", "", vec_value),
+    vec_value = gsub("[\n\\r\\t ]+", " ", vec_value),
+    vec_value = sub("^\\s+", "", vec_value),
+    vec_value = strsplit(vec_value, " ")
+  ) |>
+  mutate(# Convert the list of numeric values to a numeric vector
+    vec_value = lapply(vec_value, function(x) as.numeric(x))
+  )
+```
+
+**保存数据**
+```{r}
+save(vector_cal, file = "RData/vector_cal.RData")
+# load(file='RData/vector_cal.RData')
+# 将DataFrame导出为RData文件
+```
+
+### 计算CSM
+
+#### text2vec计算方法
+```{r}
+split_vector <- split(review_vector, review_vector$HotelID)
+```
+
+```{r}
+content_similarity <- function(df) {
+  # 对评分日期和评论ID进行排序
+  df <- df |> arrange(RatingID, ReviewID)
+  n <- nrow(df)
+  # 预分配相似度向量
+  sim_10_values <- numeric(n)
+  
+  # 一个矩阵，包含所有行的数值数据
+  content_matrix <- as.matrix(df[, 2:201])
+  
+  # 一个函数，使用text2vec包的方法来计算余弦相似度
+  get_cosine_similarity <- function(x, y) {
+    sim <- sim2(x, y, method = "cosine")
+    mean(sim, na.rm = TRUE) # 返回余弦相似度的平均值
+  }
+  # 循环遍历每一行
+  for (i in 1:n) {
+    # 选择参与比较的行
+    if(i <= 10) {
+      tmp_rest <- content_matrix[1:(i-1), , drop = FALSE]
+    } else {
+      tmp_rest <- content_matrix[(i-10):(i-1), , drop = FALSE]
+    }
+    # 仅当有可比较的行时计算相似度
+    if(nrow(tmp_rest) > 0) {
+      sim_10_values[i] <- get_cosine_similarity(content_matrix[i, , drop = FALSE], tmp_rest)
+    }
+  }
+  # 将计算好的相似度值赋给数据框
+  df$sim_10 <- sim_10_values
+  df
+}
+```
+
+**算大数据集**
+```{r}
+# 记录开始时间
+start_time <- Sys.time()
+
+# 应用函数到每个分组，并合并结果
+content_results <- do.call("rbind", lapply(split_vector, content_similarity))
+
+# 记录结束时间，并计算耗时
+end_time <- Sys.time()
+time_taken <- end_time - start_time
+print(time_taken)
+
+content_results
+```
+
+```{r}
+summary(content_results$sim_10)
+sd(na.omit(content_results$sim_10))
+```
+
+####自行计算余弦相似度
+计算CSM
+```{r}
+load(file='RData/vector_cal.RData')
+```
+
+
+```{r}
+calculate_cosine_similarity <- function(vec1, vec2) {
+  dot_product <- sum(vec1 * vec2)
+  norm_vec1 <- sqrt(sum(vec1^2))
+  norm_vec2 <- sqrt(sum(vec2^2))
+  cosine_similarity <- dot_product / (norm_vec1 * norm_vec2)
+  return(cosine_similarity)
+}
+```
+
+
+
+**构建reveiw_CSM_20**
+```{r}
+# 计算余弦值并生成新变量 CSM 以及加权CSM_wght
+review_CSM_20 <- vector_cal |>
+  dplyr::select(HotelID, RatingDate, ReviewID, vec_value) |>
+  group_by(HotelID) |>
+  filter(n()>20) |>
+  arrange(HotelID, RatingDate, ReviewID) |>
+  mutate(
+    CSM_1 = c(NA, sapply(2:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-1]]))
+    })),
+    CSM_2 = c(rep(NA, 2), sapply(3:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-2]]))
+    })),
+    CSM_3 = c(rep(NA, 3), sapply(4:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-3]]))
+    })),
+    # 以此类推，计算 CSM_4 到 CSM_10
+    CSM_4 = c(rep(NA, 4), sapply(5:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-4]]))
+    })),
+    CSM_5 = c(rep(NA, 5), sapply(6:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-5]]))
+    })),
+    CSM_6 = c(rep(NA, 6), sapply(7:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-6]]))
+    })),
+    CSM_7 = c(rep(NA, 7), sapply(8:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-7]]))
+    })),
+    CSM_8 = c(rep(NA, 8), sapply(9:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-8]]))
+    })),
+    CSM_9 = c(rep(NA, 9), sapply(10:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-9]]))
+    })),
+    CSM_10 = c(rep(NA, 10), sapply(11:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-10]]))
+    })),
+    CSM_11 = c(rep(NA, 11), sapply(12:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-11]]))
+    })),
+    CSM_12 = c(rep(NA, 12), sapply(13:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-12]]))
+    })),
+    CSM_13 = c(rep(NA, 13), sapply(14:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-13]]))
+    })),
+    # 以此类推，计算 CSM_4 到 CSM_10
+    CSM_14 = c(rep(NA, 14), sapply(15:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-14]]))
+    })),
+    CSM_15 = c(rep(NA, 15), sapply(16:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-15]]))
+    })),
+    CSM_16 = c(rep(NA, 16), sapply(17:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-16]]))
+    })),
+    CSM_17 = c(rep(NA, 17), sapply(18:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-17]]))
+    })),
+    CSM_18 = c(rep(NA, 18), sapply(19:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-18]]))
+    })),
+    CSM_19 = c(rep(NA, 19), sapply(20:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-19]]))
+    })),
+    CSM_20 = c(rep(NA, 20), sapply(21:n(), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i-20]]))
+    })),
+    CSM_1_test = c(sapply(1:(n() - 1), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+1]]))
+    }), NA),
+    CSM_2_test = c(sapply(1:(n() - 2), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+2]]))
+    }), rep(NA, 2)),
+    CSM_3_test = c(sapply(1:(n() - 3), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+3]]))
+    }), rep(NA, 3)),
+    CSM_4_test = c(sapply(1:(n() - 4), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+4]]))
+    }), rep(NA, 4)),
+    CSM_5_test = c(sapply(1:(n() - 5), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+5]]))
+    }), rep(NA, 5)),
+    CSM_6_test = c(sapply(1:(n() - 6), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+6]]))
+    }), rep(NA, 6)),
+    CSM_7_test = c(sapply(1:(n() - 7), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+7]]))
+    }), rep(NA, 7)),
+    CSM_8_test = c(sapply(1:(n() - 8), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+8]]))
+    }), rep(NA, 8)),
+    CSM_9_test = c(sapply(1:(n() - 9), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+9]]))
+    }), rep(NA, 9)),
+    CSM_10_test = c(sapply(1:(n() - 10), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+10]]))
+    }), rep(NA, 10)),
+    CSM_11_test = c(sapply(1:(n() - 11), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+11]]))
+    }), rep(NA, 11)),
+    CSM_12_test = c(sapply(1:(n() - 12), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+12]]))
+    }), rep(NA, 12)),
+    CSM_13_test = c(sapply(1:(n() - 13), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+13]]))
+    }), rep(NA, 13)),
+    CSM_14_test = c(sapply(1:(n() - 14), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+14]]))
+    }), rep(NA, 14)),
+    CSM_15_test = c(sapply(1:(n() - 15), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+15]]))
+    }), rep(NA, 15)),
+    CSM_16_test = c(sapply(1:(n() - 16), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+16]]))
+    }), rep(NA, 16)),
+    CSM_17_test = c(sapply(1:(n() - 17), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+17]]))
+    }), rep(NA, 17)),
+    CSM_18_test = c(sapply(1:(n() - 18), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+18]]))
+    }), rep(NA, 18)),
+    CSM_19_test = c(sapply(1:(n() - 19), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+19]]))
+    }), rep(NA, 19)),
+    CSM_20_test = c(sapply(1:(n() - 20), function(i) {
+      calculate_cosine_similarity(unlist(vec_value[[i]]), unlist(vec_value[[i+20]]))
+    }), rep(NA, 20))
+  ) |>
+  ungroup() |>
+  mutate(
+    CSM_Ag_5 = (CSM_1+CSM_2+CSM_3+CSM_4+CSM_5)/5,
+    CSM_Ag_10 = (CSM_1+CSM_2+CSM_3+CSM_4+CSM_5+CSM_6+CSM_7+CSM_8+CSM_9+CSM_10)/10,
+    CSM_Ag_20 = (CSM_1+CSM_2+CSM_3+CSM_4+CSM_5+CSM_6+CSM_7+CSM_8+CSM_9+CSM_10+
+                 CSM_11+CSM_12+CSM_13+CSM_14+CSM_15+CSM_16+CSM_17+CSM_18+CSM_19+CSM_20)/20,
+    CSM_Ag_5_test = (CSM_1_test+CSM_2_test+CSM_3_test+CSM_4_test+CSM_5_test)/5,
+    CSM_Ag_10_test = (CSM_1_test+CSM_2_test+CSM_3_test+CSM_4_test+CSM_5_test
+                      +CSM_6_test+CSM_7_test+CSM_8_test+CSM_9_test+CSM_10_test)/10,
+    CSM_Ag_20_test = (CSM_1_test+CSM_2_test+CSM_3_test+CSM_4_test+CSM_5_test
+                      +CSM_6_test+CSM_7_test+CSM_8_test+CSM_9_test+CSM_10_test
+                      +CSM_11_test+CSM_12_test+CSM_13_test+CSM_14_test+CSM_15_test
+                      +CSM_16_test+CSM_17_test+CSM_18_test+CSM_19_test+CSM_20_test)/20,
+    CSM_5_5 = (CSM_Ag_5+CSM_Ag_5_test)/2,
+    CSM_10_10 = (CSM_Ag_10+CSM_Ag_10_test)/2,
+    CSM_Ag_5_wght = CSM_1+(1/2)*CSM_2+(1/3)*CSM_3+(1/4)*CSM_4+(1/5)*CSM_5,
+    CSM_Ag_10_wght = CSM_1+(1/2)*CSM_2+(1/3)*CSM_3+(1/4)*CSM_4+(1/5)*CSM_5+
+                      (1/6)*CSM_6+(1/7)*CSM_7+(1/8)*CSM_8+(1/9)*CSM_9+(1/10)*CSM_10,
+    CSM_Ag_20_wght = CSM_1+(1/2)*CSM_2+(1/3)*CSM_3+(1/4)*CSM_4+(1/5)*CSM_5+
+                      (1/6)*CSM_6+(1/7)*CSM_7+(1/8)*CSM_8+(1/9)*CSM_9+(1/10)*CSM_10+
+                 (1/11)*CSM_11+(1/12)*CSM_12+(1/13)*CSM_13+(1/14)*CSM_14+(1/15)*CSM_15+
+                   (1/16)*CSM_16+(1/17)*CSM_17+(1/18)*CSM_18+(1/19)*CSM_19+(1/20)*CSM_20,
+    CSM_Ag_5_test_wght = CSM_1_test+(1/2)*CSM_2_test+(1/3)*CSM_3_test+(1/4)*CSM_4_test+(1/5)*CSM_5_test,
+    CSM_Ag_10_test_wght = CSM_1_test+(1/2)*CSM_2_test+(1/3)*CSM_3_test+(1/4)*CSM_4_test+(1/5)*CSM_5_test
+                      +(1/6)*CSM_6_test+(1/7)*CSM_7_test+(1/8)*CSM_8_test+(1/9)*CSM_9_test+(1/10)*CSM_10_test,
+    CSM_Ag_20_test_wght = CSM_1_test+(1/2)*CSM_2_test+(1/3)*CSM_3_test+(1/4)*CSM_4_test+(1/5)*CSM_5_test
+                      +(1/6)*CSM_6_test+(1/7)*CSM_7_test+(1/8)*CSM_8_test+(1/9)*CSM_9_test+(1/10)*CSM_10_test
+                      +(1/11)*CSM_11_test+(1/12)*CSM_12_test+(1/13)*CSM_13_test+(1/14)*CSM_14_test+(1/15)*CSM_15_test
+                      +(1/16)*CSM_16_test+(1/17)*CSM_17_test+(1/18)*CSM_18_test+(1/19)*CSM_19_test+(1/20)*CSM_20_test,
+    CSM_5_5_wght = (CSM_Ag_5_wght+CSM_Ag_5_test_wght)/2,
+    CSM_10_10_wght= (CSM_Ag_10_wght+CSM_Ag_10_test_wght)/2,
+    CSM_20_20_wght= (CSM_Ag_20_wght+CSM_Ag_20_test_wght)/2
+  ) |>
+  dplyr::select(HotelID, ReviewID, vec_value, 
+                CSM_Ag_5, CSM_Ag_10, CSM_Ag_20, CSM_Ag_5_test, CSM_Ag_10_test, CSM_Ag_20_test, CSM_5_5, CSM_10_10, 
+                CSM_Ag_5_wght, CSM_Ag_10_wght, CSM_Ag_20_wght, CSM_Ag_5_test_wght, CSM_Ag_10_test_wght, CSM_Ag_20_test_wght, CSM_5_5_wght, CSM_10_10_wght, CSM_20_20_wght
+                )
+```
+
+**测试计算结果**
+```{r}
+summary(review_CSM_20$CSM_Ag_10)
+sd(na.omit(review_CSM_20$CSM_Ag_10))
+```
+这样算出来和文章基本一致
+
+**保存数据**
+```{r}
+save(review_CSM_20, file = "RData/review_CSM_20.RData")
+# 将DataFrame导出为RData文件
+```
+
+## 2.3 构建变量
+
+```{r}
+load(file = "RData/review_LSM.RData")
+load(file = "RData/review_CSM_20.RData")
+# 读取RData文件
+```
+
+```{r}
+# 合并LSM和CSM数据集
+Reg <- inner_join(review_LSM, review_CSM_20, by=c("HotelID","ReviewID")) |>
+  mutate(
+    HotelID = as.factor(HotelID)
+    )
+```
+
+**构建可读性Readability变量**
+```{r}
+hotel_user <- hotel_user1 |>
+  mutate(ReviewText = as.character(ReviewText))
+review_corpus <- corpus(hotel_user$ReviewText)
+```
+
+```{r}
+hotel_read <- hotel_user |>
+  mutate(
+    Readability = textstat_readability(review_corpus, measure = "Flesch.Kincaid")$Flesch.Kincaid
+  )
+```
+
+```{r}
+# 导出为RData文件
+save(hotel_read, file = "RData/hotel_read.RData")
+```
+
+```{r}
+# 导出为RData文件
+load("RData/hotel_read.RData")
+```
+
+```{r}
+test1<-hotel_read |>
+  mutate(UserID=gsub("[^A-Za-z0-9]", "", UserID),
+         UserID=ifelse(UserID=="",NA,UserID),
+         HotelID = as.factor(HotelID)) |>
+  filter(!is.na(UserID))
+test2<-user_detail |>
+  mutate(UserID=gsub("[^A-Za-z0-9]", "", UserID),
+         UserID=ifelse(UserID=="",NA,UserID),
+         UserID2=UserID
+         ) |>
+  filter(!is.na(UserID))
+```
+
+
+```{r}
+unique(user_detail$Age)
+# unique(user_detail$Cities_Visited)
+unique(user_detail$Contributions)
+```
+
+```{r}
+Reg2 <- inner_join(test1, test2) |>
+  filter(UserID==UserID2) |>
+  mutate(
+    HotelID = as.factor(HotelID),
+    Num_Helpful = as.numeric(NumHelpful),
+    Reviewer_Exper = ifelse(is.na(Contributions),0,as.numeric(Contributions)),
+    Review_Valence = as.numeric(AvgRatingStarsThisUser),
+    Elapsed_Day = as.numeric(ElapsedDays),
+    Age = ifelse(Age=="",NA,Age),
+    Gender = ifelse(Gender=="",NA,Gender),
+    No_Disclosure = ifelse(is.na(Gender)|is.na(Age),1,0),
+    Female = ifelse(is.na(Gender),0,ifelse(Gender == "female",1,0)),
+    Young_Age = ifelse(Age %in% c("25-34", "18-24", "13-17") & !is.na(Age), 1, 0),
+    Mid_Age = ifelse(Age == "35-49" & !is.na(Age), 1, 0),
+    Old_Age = ifelse(Age %in% c("50-64", "65+") & !is.na(Age), 1, 0),
+    Cities_Visited = ifelse(is.na(Cities_Visited),0,Cities_Visited)
+  ) |>
+  dplyr::select(HotelID,ReviewID,RatingDate,ReviewText,Num_Helpful,UserID,Reviewer_Exper,Review_All,Review_All,Forums_All,Photos_All,
+                Review_Valence,Elapsed_Day,Age,Gender,No_Disclosure,
+                Young_Age,Mid_Age,Old_Age,Female,Cities_Visited, Readability)
+```
+
+
+```{r}
+review_WC <- review_LIWC |>
+  dplyr::select(ReviewID, WC)
+Reg_Finished <- inner_join(Reg, Reg2) |>
+  left_join(review_WC)
+```
+
+```{r}
+summary(Reg_Finished$LSM_10)
+sd(na.omit(Reg_Finished$LSM_10))
+summary(Reg_Finished$CSM_Ag_10)
+sd(na.omit(Reg_Finished$CSM_Ag_10))
+```
+
+**一下变量均与论文结果一致**
+```{r}
+summary(Reg_Finished$Review_Valence)
+sd(Reg_Finished$Review_Valence)
+summary(Reg_Finished$Readability)
+sd(Reg_Finished$Readability)
+summary(Reg_Finished$Num_Helpful)
+sd(Reg_Finished$Num_Helpful)
+summary(Reg_Finished$Cities_Visited)
+sd(Reg_Finished$Cities_Visited)
+summary(Reg_Finished$WC)
+sd(Reg_Finished$WC)
+summary(Reg_Finished$Female)
+sd(Reg_Finished$Female)
+summary(Reg_Finished$Mid_Age)
+sd(Reg_Finished$Mid_Age)
+summary(Reg_Finished$Old_Age)
+sd(Reg_Finished$Old_Age)
+summary(Reg_Finished$No_Disclosure)
+sd(Reg_Finished$No_Disclosure)
+summary(Reg_Finished$Elapsed_Day)
+sd(Reg_Finished$Elapsed_Day)
+summary(Reg_Finished$Reviewer_Exper)
+sd(Reg_Finished$Reviewer_Exper)
+```
+```{r}
+remove(Reg,Reg2)
+remove(test1)
+remove(test2)
+```
+
+**保存数据 **
+```{r include=FALSE}
+# 导出为RData文件
+save(Reg_Finished, file = "RData/Reg_Finished.RData")
+```
+
+# 3 Reg - 回归时间过长，转用Stata
+## 3.0 构建200维变量作为控制变量
+
+```{r}
+library(MASS)         # run regression
+library(stargazer)    # output form
+```
+
+```{r}
+review_vector <- review_vector |>
+  mutate(HotelID = as.factor(HotelID))
+Reg_Finished <- Reg_Finished |>
+  dplyr::select(-vec_value) |>
+  dplyr::select(-RatingDate)
+```
+
+```{r}
+Reg_Vec <- inner_join(Reg_Finished, review_vector)
+Reg_Vec <- Reg_Vec |>
+  dplyr::select(-ReviewText) |>
+  dplyr::select(-tail(names(Reg_Vec), 11)) 
+```
+**保存数据**
+```{r include=FALSE}
+# 导出为RData文件
+save(Reg_Vec, file = "RData/Reg_Vec.RData")
+```
+
+```{r}
+load("RData/Reg_Vec.RData")
+```
+
+
+**导出至stata**
+```{r}
+Reg_Vec <- Reg_Vec |>
+  mutate(CSM_20_20_wght = (CSM_Ag_10_wght+CSM_Ag_10_test_wght)/2) 
+require(foreign)
+write.dta(Reg_Vec, "Stata/Response_3/Reg_Vec.dta")
+```
+
+**测试**
+
+```{r}
+Reg_Stata <- read_dta("/Users/samxie/Desktop/Undergraduate_Thesis/UT_All/Final_Version/Stata/Response_3/20221225_hotel_user.dta")
+```
+
+```{r}
+Reg_Stata_Test <- Reg_Stata |>
+  dplyr::select(HotelID,ReviewID,RatingDate,NumHelpful,UserID,Contributions,
+                ElapsedDays,Not_disclosure,
+                MidAge,OldAge,women,Cities_Visited, readability,LSM_10_rm1) |>
+  mutate(HotelID=as.factor(HotelID))
+```
+
+```{r}
+Reg_Vec_test <- Reg_Vec |>
+  mutate(Cities_Visited_test = Cities_Visited) |>
+  dplyr::select(HotelID,ReviewID,Num_Helpful,UserID,Reviewer_Exper,
+                Elapsed_Day,No_Disclosure,
+                Mid_Age,Old_Age,Female,Cities_Visited_test, Readability,LSM_10)
+```
+
+```{r}
+test_Reg <- inner_join(Reg_Vec_test, Reg_Stata_Test) |>
+  mutate(Reviewer_Exper=Reviewer_Exper, .after=Contributions) |>
+  dplyr::select(HotelID,ReviewID,LSM_10,LSM_10_rm1)
+```
+```{r}
+LSM_10 <- test_Reg$LSM_10
+LSM_10_rm1 <- test_Reg$LSM_10_rm1
+cor.test(LSM_10, LSM_10_rm1)
+```
+
+## 3.1 vec_control_Based
+
+```{r}
+vec_control_Based <- glm.nb(
+  Num_Helpful ~
+    CSM_Ag_10 +
+    LSM_Ag_10 +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    HotelID +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec,link=log
+)
+```
+
+```{r}
+# 输出规范的三线表
+# 使用stargazer生成三线表
+table_vec_control_Based <- stargazer(vec_control_Based, type = "text", omit = c("HotelID", vec_columns), title = "Regression Results")
+
+# 将输出保存为文本文件
+writeLines(table_vec_control_Based, "vec_control_Based.txt")
+```
+
+## 3.2 vec_control_H2
+
+```{r}
+# 将新的控制变量加入回归模型
+vec_control_H2 <- glm.nb(
+  Num_Helpful ~
+    CSM_Ag_10 +
+    LSM_Ag_10 +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    CSM_Ag_10 * log(Reviewer_Exper + 1) +
+    HotelID +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec,link=log
+)
+```
+
+```{r}
+# 输出规范的三线表
+# 使用stargazer生成三线表
+table_vec_control_H2 <- stargazer(vec_control_H2, type = "text", omit = c("HotelID", "year", vec_columns), title = "Regression Results")
+
+# 将输出保存为文本文件
+writeLines(table_vec_control_H2, "vec_control_H2.txt")
+```
+
+## 3.3 vec_control_H3
+
+```{r}
+# 将新的控制变量加入回归模型
+vec_control_H3 <- glm.nb(
+  Num_Helpful ~
+    CSM_Ag_10 +
+    LSM_Ag_10 +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    CSM_Ag_10 * Review_Valence +
+    HotelID +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec,link=log
+)
+```
+
+```{r}
+# 输出规范的三线表
+# 使用stargazer生成三线表
+table_vec_control_H3 <- stargazer(vec_control_H3, type = "text", omit = c("HotelID",  vec_columns), title = "Regression Results")
+
+# 将输出保存为文本文件
+writeLines(table_vec_control_H3, "vec_control2_H3.txt")
+```
+
+## 3.4 vec_control_All
+
+```{r include=FALSE}
+# 将新的控制变量加入回归模型
+vec_control <- glm.nb(
+  Num_Helpful ~
+    CSM_Ag_10 +
+    LSM_Ag_10 +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    CSM_Ag_10 * log(Reviewer_Exper + 1) +
+    CSM_Ag_10 * Review_Valence +
+    HotelID +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec,link=log
+)
+```
+
+```{r}
+# 使用stargazer生成三线表
+table_vec_control <- stargazer(vec_control, type = "text", omit = c("HotelID", vec_columns), title = "Regression Results")
+# 将输出保存为文本文件
+writeLines(table_vec_control, "vec_control.txt")
+```
+
+
+## 3-1 整合输出html文件
+
+```{r}
+stargazer(vec_control_Based, vec_control_H2, vec_control_H3, vec_control,type = "text", omit = c("HotelID",vec_columns), no.space = TRUE, out = "vec_control_nb.html")
+```
+
+## 3.5 vec_control_wght_Based
+
+```{r}
+# 将新的控制变量加入回归模型
+vec_control_wght_Based <- glm.nb(
+  Num_Helpful ~
+    CSM_Ag_10_wght +
+    LSM_Ag_10_wght +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    HotelID +
+    year +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec_wght,link=log
+)
+```
+
+```{r}
+# 输出规范的三线表
+# 使用stargazer生成三线表
+table_vec_control_wght_Based <- stargazer(vec_control_wght_Based, type = "text", omit = c("HotelID", vec_columns), title = "Regression Results")
+
+# 将输出保存为文本文件
+writeLines(table_vec_control_wght_Based, "vec_control_wght_Based.txt")
+```
+
+## 3.6 vec_control_wght_H2
+
+```{r}
+# 将新的控制变量加入回归模型
+vec_control_wght_H2 <- glm.nb(
+  Num_Helpful ~
+    CSM_Ag_10_wght +
+    LSM_Ag_10_wght +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    CSM_Ag_10_wght * log(Reviewer_Exper + 1) +
+    HotelID +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec_wght,link=log
+)
+```
+
+```{r}
+# 输出规范的三线表
+# 使用stargazer生成三线表
+table_vec_control_wght_H2 <- stargazer(vec_control_wght_H2, type = "text", omit = c("HotelID", vec_columns), title = "Regression Results")
+
+# 将输出保存为文本文件
+writeLines(table_vec_control_wght_H2, "vec_control_wght_H2.txt")
+```
+
+## 3.7 vec_control_wght_H3
+
+```{r}
+# 将新的控制变量加入回归模型
+vec_control_wght_H3 <- glm.nb(
+  Num_Helpful ~
+    CSM_Ag_10_wght +
+    LSM_Ag_10_wght +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    CSM_Ag_10_wght * Review_Valence +
+    HotelID +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec_wght,link=log
+)
+```
+
+```{r}
+# 输出规范的三线表
+# 使用stargazer生成三线表
+table_vec_control_wght_H3 <- stargazer(vec_control_wght_H3, type = "text", omit = c("HotelID", vec_columns), title = "Regression Results")
+
+# 将输出保存为文本文件
+writeLines(table_vec_control_wght_H3, "Reg/vec_control_wght_H3.txt")
+```
+
+## 3.8 vec_control_wght_All
+
+```{r}
+# 将新的控制变量加入回归模型
+vec_control_wght <- glm.nb(
+  Num_Helpful ~
+    CSM_Ag_10_wght +
+    LSM_Ag_10_wght +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    CSM_Ag_10_wght * log(Reviewer_Exper + 1) +
+    CSM_Ag_10_wght * Review_Valence +
+    HotelID +
+    year +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec_wght,link=log
+)
+```
+
+```{r}
+# 输出规范的三线表
+# 使用stargazer生成三线表
+table_vec_control_wght <- stargazer(vec_control_wght, type = "text", omit = c("HotelID", "year", vec_columns), title = "Regression Results")
+
+# 将输出保存为文本文件
+writeLines(table_vec_control_wght, "vec_control_wght.txt")
+```
+
+```{r}
+stargazer(vec_control_wght,   type = "text", omit = c("HotelID","year", vec_columns), no.space = TRUE, out = "vec_control_wght_nb0.html")
+```
+
+## 3-2 整合输出html文件
+
+```{r}
+stargazer(vec_control_wght_H2, vec_control_wght_H3,vec_control_wght, type = "text", omit = c("HotelID","year", vec_columns), no.space = TRUE, out = "vec_control_wght_lm.html")
+```
+
+## 3.9 稳健性-组别
+
+### 20-
+
+```{r}
+# 20-
+vec_control_wght_20_ <- glm.nb(
+  Num_Helpful ~
+    CSM_Ag_20_wght +
+    LSM_Ag_20_wght +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    CSM_Ag_20_wght * log(Reviewer_Exper + 1) +
+    CSM_Ag_20_wght * Review_Valence +
+    HotelID +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec_wght,
+  link = log
+)
+```
+
+```{r}
+# 输出规范的三线表
+# 使用stargazer生成三线表
+table_vec_control_wght_20_ <- stargazer(vec_control_wght_20_, type = "text", omit = c("HotelID", vec_columns), title = "Regression Results")
+
+# 将输出保存为文本文件
+writeLines(table_vec_control_wght_20_, "vec_control_wght_20_.txt")
+```
+
+### 5-5
+
+```{r}
+# 5-5
+vec_control_wght_5_5 <- glm.nb(
+  Num_Helpful ~
+    CSM_5_5_wght +
+    LSM_5_5_wght +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    CSM_5_5_wght * log(Reviewer_Exper + 1) +
+    CSM_5_5_wght * Review_Valence +
+    HotelID +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec_wght,
+  link = log
+)
+```
+
+```{r}
+# 输出规范的三线表
+# 使用stargazer生成三线表
+table_vec_control_wght_5_5 <- stargazer(vec_control_wght_5_5, type = "text", omit = c("HotelID", vec_columns), title = "Regression Results")
+
+# 将输出保存为文本文件
+writeLines(table_vec_control_wght_5_5, "vec_control_wght_5_5.txt")
+```
+
+### 10-10
+
+```{r}
+# 10-10
+vec_control_wght_10_10 <- glm.nb(
+  Num_Helpful ~
+    CSM_10_10_wght +
+    LSM_10_10_wght +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    CSM_10_10_wght * log(Reviewer_Exper + 1) +
+    CSM_10_10_wght * Review_Valence +
+    HotelID +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec_wght,
+  link = log
+)
+```
+
+```{r}
+# 输出规范的三线表
+# 使用stargazer生成三线表
+table_vec_control_wght_10_10 <- stargazer(vec_control_wght_10_10, type = "text", omit = c("HotelID", vec_columns), title = "Regression Results")
+
+# 将输出保存为文本文件
+writeLines(table_vec_control_wght_10_10, "vec_control_wght_10_10.txt")
+```
+
+### 20-20
+
+```{r}
+# 20-20
+vec_control_wght_20_20 <- glm.nb(
+  Num_Helpful ~
+    CSM_20_20_wght +
+    LSM_20_20_wght +
+    Review_Valence +
+    Readability +
+    log(Review_Length) +
+    Elapsed_Day +
+    No_Disclosure +
+    Female +
+    Mid_Age +
+    Old_Age +
+    log(Reviewer_Exper + 1) +
+    log(Cities_Visited + 1) +
+    CSM_20_20_wght * log(Reviewer_Exper + 1) +
+    CSM_20_20_wght * Review_Valence +
+    HotelID +
+    year +
+    vec1 + vec2 + vec3 + vec4 + vec5 + vec6 + vec7 + vec8 + vec9 + vec10 + vec11 + vec12 + vec13 + vec14 + vec15 + vec16 + vec17 + vec18 + vec19 + vec20 + vec21 + vec22 + vec23 + vec24 + vec25 + vec26 + vec27 + vec28 + vec29 + vec30 + vec31 + vec32 + vec33 + vec34 + vec35 + vec36 + vec37 + vec38 + vec39 + vec40 + vec41 + vec42 + vec43 + vec44 + vec45 + vec46 + vec47 + vec48 + vec49 + vec50 + vec51 + vec52 + vec53 + vec54 + vec55 + vec56 + vec57 + vec58 + vec59 + vec60 + vec61 + vec62 + vec63 + vec64 + vec65 + vec66 + vec67 + vec68 + vec69 + vec70 + vec71 + vec72 + vec73 + vec74 + vec75 + vec76 + vec77 + vec78 + vec79 + vec80 + vec81 + vec82 + vec83 + vec84 + vec85 + vec86 + vec87 + vec88 + vec89 + vec90 + vec91 + vec92 + vec93 + vec94 + vec95 + vec96 + vec97 + vec98 + vec99 + vec100 + vec101 + vec102 + vec103 + vec104 + vec105 + vec106 + vec107 + vec108 + vec109 + vec110 + vec111 + vec112 + vec113 + vec114 + vec115 + vec116 + vec117 + vec118 + vec119 + vec120 + vec121 + vec122 + vec123 + vec124 + vec125 + vec126 + vec127 + vec128 + vec129 + vec130 + vec131 + vec132 + vec133 + vec134 + vec135 + vec136 + vec137 + vec138 + vec139 + vec140 + vec141 + vec142 + vec143 + vec144 + vec145 + vec146 + vec147 + vec148 + vec149 + vec150 + vec151 + vec152 + vec153 + vec154 + vec155 + vec156 + vec157 + vec158 + vec159 + vec160 + vec161 + vec162 + vec163 + vec164 + vec165 + vec166 + vec167 + vec168 + vec169 + vec170 + vec171 + vec172 + vec173 + vec174 + vec175 + vec176 + vec177 + vec178 + vec179 + vec180 + vec181 + vec182 + vec183 + vec184 + vec185 + vec186 + vec187 + vec188 + vec189 + vec190 + vec191 + vec192 + vec193 + vec194 + vec195 + vec196 + vec197 + vec198 + vec199 + vec200,
+  Reg_Vec_wght,
+  link = log
+)
+```
+
+```{r}
+# 输出规范的三线表
+# 使用stargazer生成三线表
+table_vec_control_wght_20_20 <- stargazer(vec_control_wght_20_20, type = "text", omit = c("HotelID", "year", vec_columns), title = "Regression Results")
+
+# 将输出保存为文本文件
+writeLines(table_vec_control_wght_20_20, "vec_control_wght_20_20.txt")
+```
+
+### 输出整合
+
+```{r}
+stargazer(vec_control_wght,vec_control_wght_20_,   type = "text", column.labels = c("10-", "20-"), omit = c("HotelID","year", vec_columns), no.space = TRUE, out = "vec_control_wght_nb1.html")
+```
+
+```{r}
+stargazer(vec_control_wght_5_5,vec_control_wght_10_10,vec_control_wght_20_20, type = "text", column.labels = c("5-5", "10-10","20-20"), omit = c("HotelID","year", vec_columns), no.space = TRUE, out = "vec_control_wght_nb2.html")
+```

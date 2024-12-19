@@ -1,0 +1,108 @@
+---
+title: "STM_Test"
+author: "Samxie"
+date: "2024-12-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(haven)
+library(tidyverse)
+library(ggplot2)
+```
+
+```{r}
+STM_Source <- load("STM_souredata.RData")
+STM_eu <- test_STM |>
+  mutate(VSum = rowSums(select(test_STM, starts_with("V"))))
+```
+
+```{r before process}
+vec_pos <- c("V18","V5","V23","V14","V17","V24","V4","V12","V19","V11","V1","V25","V2","V20")
+vec_neg <- c("V15","V16","V7","V3","V9","V8","V6","V13","V10","V22","V21")
+vec_all <- union(vec_neg,vec_pos)
+vec_order <- paste0("V", 1:25)
+vec_pos <- intersect(vec_order, vec_pos)
+vec_neg <- intersect(vec_order, vec_neg)
+vec_all <- intersect(vec_order, vec_all)
+
+STM_eu$vec_pos_values <- lapply(1:nrow(STM_eu), function(i) as.numeric(STM_eu[i, vec_pos, drop = FALSE]))
+STM_eu$vec_neg_values <- lapply(1:nrow(STM_eu), function(i) as.numeric(STM_eu[i, vec_neg, drop = FALSE]))
+STM_eu$vec_all_values <- lapply(1:nrow(STM_eu), function(i) as.numeric(STM_eu[i, vec_all, drop = FALSE]))
+```
+
+```{r}
+unlist(STM_eu$vec_pos_values[[1]])
+unlist(STM_eu$vec_pos_values[[2]])
+calculate_euclidean_distance(unlist(STM_eu$vec_pos_values[[2]]),unlist(STM_eu$vec_pos_values[[1]]))
+
+
+```
+
+```{r Euclidean Distance}
+calculate_euclidean_distance <- function(vec1, vec2) {
+  euclidean_distance <- sqrt(sum((vec1 - vec2)^2))
+  return(euclidean_distance)
+}
+
+generate_csm_columns <- function(data, column_name, max_lag, distance_function) {
+  for (lag in 1:max_lag) {
+    new_col <- paste0("CSM_",column_name, lag)
+    data[[new_col]] <- c(rep(NA, lag), sapply((lag + 1):nrow(data), function(i) {
+      distance_function(unlist(data[[column_name]][[i]]), unlist(data[[column_name]][[i - lag]]))
+    }))
+  }
+  return(data)
+}
+```
+
+```{r processing1}
+CSM_eu <- STM_eu |>
+  dplyr::select(HotelID, ReviewID, vec_pos_values, vec_neg_values, vec_all_values) |>
+  group_by(HotelID) |>
+  filter(n() > 20) |>
+  arrange(HotelID, ReviewID) |>
+  group_modify(~ generate_csm_columns(.x, "vec_pos_values", max_lag = 10, distance_function = calculate_euclidean_distance)) |>
+  group_modify(~ generate_csm_columns(.x, "vec_neg_values", max_lag = 10, distance_function = calculate_euclidean_distance)) |>
+  group_modify(~ generate_csm_columns(.x, "vec_all_values", max_lag = 10, distance_function = calculate_euclidean_distance)) |>
+  mutate(
+    CSM_10 = (CSM_vec_all_values1+CSM_vec_all_values2+CSM_vec_all_values3+CSM_vec_all_values4+CSM_vec_all_values5+CSM_vec_all_values6+CSM_vec_all_values7+CSM_vec_all_values8+CSM_vec_all_values9+CSM_vec_all_values10)/10,
+    CSM_10_im_pos = (CSM_vec_pos_values1+CSM_vec_pos_values2+CSM_vec_pos_values3+CSM_vec_pos_values4+CSM_vec_pos_values5+CSM_vec_pos_values6+CSM_vec_pos_values7+CSM_vec_pos_values8+CSM_vec_pos_values9+CSM_vec_pos_values10)/10,
+    CSM_10_im_neg = (CSM_vec_neg_values1+CSM_vec_neg_values2+CSM_vec_neg_values3+CSM_vec_neg_values4+CSM_vec_neg_values5+CSM_vec_neg_values6+CSM_vec_neg_values7+CSM_vec_neg_values8+CSM_vec_neg_values9+CSM_vec_neg_values10)/10
+  ) |>
+  dplyr::select(ReviewID, CSM_10, CSM_10_im_pos, CSM_10_im_neg)
+```
+
+```{r}
+EU_D <- CSM_eu |>
+  ungroup() |>
+  dplyr::select(ReviewID, CSM_10, CSM_10_im_pos, CSM_10_im_neg) |>
+  mutate(
+    CSM_10 = -CSM_10, 
+    CSM_10_im_pos = -CSM_10_im_pos, 
+    CSM_10_im_neg = -CSM_10_im_neg
+  )
+STM_V200 <- left_join(STM_posneg, EU_D) 
+STM_V200 <- left_join(STM_V200, V200)
+write_dta(STM_V200, "1219STM_V200.dta")
+```
+
+## other test
+
+```{r}
+STM_posneg<- read_dta("STM_posneg.dta") |>
+  dplyr::select(-starts_with("V"))
+V200 <- read_dta("STM_V200_posneg_eu.dta") |>
+  dplyr::select(ReviewID, starts_with("V"))
+```
+
+```{r}
+STM_V200 <- left_join(STM_posneg, V200)
+write_dta(STM_V200, "1219STM_V200.dta")
+```
